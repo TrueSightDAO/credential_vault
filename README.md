@@ -274,6 +274,41 @@ strong passphrase regardless of which password manager you trust.
 
 ---
 
+## macOS Sonoma quirk — launchd + iCloud Drive
+
+You may notice old snapshots accumulating in iCloud beyond the 30-snapshot
+retention. This is expected and not an error.
+
+**Cause.** macOS Sonoma sandboxes launchd-spawned processes from `rename`
+and `unlink` operations inside `~/Library/Mobile Documents/com~apple~CloudDocs/`.
+The agent can CREATE new snapshots (works fine) but can't DELETE old ones
+when running under launchd, unless `/bin/bash` has been granted Full Disk
+Access.
+
+**Two fixes — pick either:**
+
+1. **Do nothing automatic, prune manually.** Run
+   `~/Applications/credential_vault/scripts/backup.sh` from your interactive
+   terminal occasionally (the shell that Terminal.app spawns has FDA via
+   user prefs, so the prune step works there). At 245 KB per snapshot, even
+   hundreds of accumulated snapshots cost a few hundred MB — nothing
+   urgent.
+
+2. **Grant `/bin/bash` Full Disk Access** in System Settings → Privacy &
+   Security → Full Disk Access. Broader trust grant, but lets the launchd
+   agent prune automatically. Not recommended unless retention matters to
+   you — FDA on `/bin/bash` means EVERY launchd-spawned shell script gets
+   full filesystem access, which is more permission than this single
+   workflow needs.
+
+**Why the snapshot itself still works without FDA.** The script writes
+directly to the final snapshot path (no `.tmp` + `mv` pattern), and uses a
+plain text file `credentials-latest.txt` for the "newest" pointer (not a
+symlink, since updating a symlink requires `unlink` on the old one). Both
+of those use only CREATE operations, which launchd is allowed to do.
+
+---
+
 ## Open follow-ups
 
 - **Memory dir not vaulted.** `~/.claude/projects/*/memory/` is excluded by
