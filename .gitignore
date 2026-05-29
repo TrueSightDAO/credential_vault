@@ -1,4 +1,58 @@
-# Per-laptop / per-governor state — never commit these.
+# ─── DENY-LIST — credentials, secrets, snapshots ────────────────────────
+#
+# This repo is PUBLIC. Belt-and-suspenders against accidental commits of any
+# credential content. If you find yourself editing this file to allow
+# something through, stop and think — almost certainly the right move is to
+# rename the file, not loosen the gitignore.
+#
+# Anything matching a pattern below cannot accidentally be `git add`'d
+# unless you pass --force, which gives you one last chance to notice.
+
+# Encrypted vault snapshots (should never be in the repo — they live in iCloud)
+*.age
+
+# Anything that looks like a Google service-account or OAuth JSON
+*.json
+!package.json
+!package-lock.json
+!tsconfig*.json
+
+# .env files of every flavor
+.env
+.env.*
+*.env
+
+# Private keys / certs in every common form
+*.pem
+*.key
+*.p12
+*.pfx
+*_rsa
+*_rsa.pub
+*_ed25519
+*_ed25519.pub
+id_rsa*
+id_ed25519*
+
+# Anything with "secret", "passphrase", "token", "credential" in the name
+*secret*
+*passphrase*
+*token*
+*credential*
+!CREDENTIAL_VAULT.md
+!credential_vault.md
+!README.md
+
+# Per-laptop / per-governor state files (never commit)
 MANIFEST.txt.canonical
+MANIFEST.local.txt
+.credential_vault_*
+*onboarding_progress*
+
+# Editor / OS noise
 *.bak
+*.swp
+*.swo
 .DS_Store
+.idea/
+.vscode/
