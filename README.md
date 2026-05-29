@@ -9,9 +9,16 @@ joining the TrueSight DAO workspace, and the first repo you should set up on
 a fresh Mac. It is *separate* from the regular operational repos on purpose:
 its only job is to survive your laptop dying.
 
-**Visibility:** PRIVATE. The manifest reveals which services the workspace
-keeps credentials for; the runbook reveals the storage layout. Both are
-low-grade information disclosures that don't belong in a public repo.
+**Visibility:** PUBLIC. The repo contains no credential values — only
+path declarations (`MANIFEST.txt`), runbook documentation, and the
+encrypt/decrypt scripts themselves. Making it public means the *first*
+step of disaster recovery (clone this repo) works even before GitHub auth
+is rebuilt on a fresh laptop, and the encryption pipeline is open to
+audit. Each governor's actual credential snapshots live in *their own*
+iCloud Drive, never in this repo. The hardened `.gitignore` deny-lists
+every common credential filename pattern (`*.age`, `*.json`, `.env*`,
+`*_rsa`, `*secret*`, `*token*`, `*credential*`, `*passphrase*`) as
+belt-and-suspenders against accidental commits.
 
 ---
 
