@@ -1,0 +1,4 @@
+# Per-laptop / per-governor state — never commit these.
+MANIFEST.txt.canonical
+*.bak
+.DS_Store
