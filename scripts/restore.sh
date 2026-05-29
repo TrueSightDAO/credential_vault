@@ -56,8 +56,16 @@ if (( LIST_ONLY )); then
 fi
 
 # ─── Resolve which snapshot to restore ─────────────────────────────────
+# Three resolution strategies, in order of preference:
+#   1. credentials-latest.txt — plain-text pointer (current backup.sh writes this;
+#      works under launchd-without-FDA because it's just a CREATE).
+#   2. credentials-latest.age — legacy symlink (older backup.sh wrote this; kept
+#      for backward compatibility with pre-2026-05-29-evening snapshots).
+#   3. Newest matching credentials-*.age by mtime.
 if [[ -z "$SNAPSHOT" ]]; then
-  if [[ -L "$VAULT_DIR/credentials-latest.age" ]]; then
+  if [[ -f "$VAULT_DIR/credentials-latest.txt" ]]; then
+    SNAPSHOT="$VAULT_DIR/$(cat "$VAULT_DIR/credentials-latest.txt")"
+  elif [[ -L "$VAULT_DIR/credentials-latest.age" ]]; then
     SNAPSHOT="$VAULT_DIR/$(readlink "$VAULT_DIR/credentials-latest.age")"
   else
     SNAPSHOT=$(ls -t "$VAULT_DIR"/credentials-*.age 2>/dev/null | grep -v latest | head -1 || true)

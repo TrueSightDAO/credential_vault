@@ -97,46 +97,57 @@ if (( ${#MISSING[@]} > 0 )); then
 fi
 
 # ─── Build encrypted snapshot ──────────────────────────────────────────
+# NOTE on launchd + iCloud Drive: macOS Sonoma sandboxes launchd-spawned
+# processes from `rename` and `unlink` operations inside
+# ~/Library/Mobile Documents/com~apple~CloudDocs/ unless the parent binary
+# (`/bin/bash`) has been granted Full Disk Access. CREATE is fine. To stay
+# entitlement-free we write the final file directly (no .tmp + mv pattern)
+# and treat the "latest" pointer as a plain text file (no symlink update).
+# Retention `rm`s are wrapped so a denial logs a warning instead of failing
+# the run; the snapshot itself is still safely written.
 TS=$(date +%Y%m%d-%H%M%S)
 OUT="$VAULT_DIR/credentials-${TS}.age"
-TMP="$OUT.tmp"
-
-cleanup() {
-  rm -f "$TMP"
-}
-trap cleanup EXIT
 
 log "Encrypting ${#PATHS[@]} path(s) → $(basename "$OUT")"
 
 # tar streams from $HOME so the archive contains $HOME-relative paths;
 # openssl enc consumes the stream with PBKDF2 (600k iter) + AES-256-CBC.
+# Direct write to OUT (no .tmp + mv) so launchd-without-FDA can still publish.
 if ! ( cd "$HOME" && tar -czf - "${PATHS[@]}" ) | \
        openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt \
-                   -pass file:"$PASSPHRASE_FILE" -out "$TMP"; then
+                   -pass file:"$PASSPHRASE_FILE" -out "$OUT"; then
   log "ERROR: encrypt pipeline failed"
+  # Best-effort cleanup of any partial OUT — silently OK if iCloud denies.
+  rm -f "$OUT" 2>/dev/null || true
   exit 3
 fi
 
-mv "$TMP" "$OUT"
-trap - EXIT
-
-# Update the "latest" symlink atomically (so restore always knows newest)
-ln -sfn "$(basename "$OUT")" "$VAULT_DIR/credentials-latest.age"
+# Update the "latest" pointer. Use a plain text file (not a symlink) because
+# updating a symlink requires `unlink` on the old one, which launchd-without-FDA
+# can't do inside iCloud Drive. restore.sh now reads this text file.
+echo "$(basename "$OUT")" > "$VAULT_DIR/credentials-latest.txt"
 
 SIZE=$(stat -f %z "$OUT")
 log "Wrote $(basename "$OUT") (${SIZE} bytes)"
 
 # ─── Prune old snapshots beyond RETENTION ──────────────────────────────
 # (portable to bash 3.2 on macOS — no mapfile)
+# `rm` here may fail under launchd-without-FDA; wrap so the script still
+# exits 0 with a warning instead of failing the backup. Snapshots will
+# accumulate until you either grant FDA OR run `backup.sh` from your
+# interactive shell occasionally (which inherits FDA via Terminal.app).
 SNAPSHOTS=()
 while IFS= read -r snap; do
   SNAPSHOTS+=("$snap")
-done < <(ls -t "$VAULT_DIR"/credentials-*.age 2>/dev/null | grep -v latest || true)
+done < <(ls -t "$VAULT_DIR"/credentials-*.age 2>/dev/null || true)
 if (( ${#SNAPSHOTS[@]} > RETENTION )); then
   i=$RETENTION
   while (( i < ${#SNAPSHOTS[@]} )); do
-    rm -f "${SNAPSHOTS[i]}"
-    log "Pruned $(basename "${SNAPSHOTS[i]}")"
+    if rm -f "${SNAPSHOTS[i]}" 2>/dev/null; then
+      log "Pruned $(basename "${SNAPSHOTS[i]}")"
+    else
+      log "WARN: could not prune $(basename "${SNAPSHOTS[i]}") (likely launchd-without-FDA; run backup.sh from terminal occasionally to prune)"
+    fi
     i=$((i+1))
   done
 fi
