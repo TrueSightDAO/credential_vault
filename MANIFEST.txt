@@ -1,35 +1,47 @@
-# CREDENTIAL_MANIFEST.txt — paths included in the encrypted credential vault.
+# MANIFEST.txt — paths included in the encrypted credential vault.
 #
-# Format: one path per line. Lines starting with `#` and blank lines are ignored.
-# Paths may use `~` (expanded to $HOME). Paths may be files OR directories.
-# Missing paths are warned, not fatal — manifest is a forward declaration.
+# Two path classes:
+#   ${WORKSPACE}/...   workspace-relative. Resolved against $TRUESIGHT_WORKSPACE
+#                      (default: $HOME/Applications). Each governor sets this
+#                      env var if their repos live somewhere other than the
+#                      default. Restore re-roots these to the restoring user's
+#                      workspace, so backing up at ~/Applications/dao_client/
+#                      and restoring with TRUESIGHT_WORKSPACE=~/code lands the
+#                      file at ~/code/dao_client/.env. (V1.1)
+#   ~/...              home-relative. Resolved against $HOME on both backup and
+#                      restore. Use for dotfiles, system creds, etc.
 #
-# To add/remove: edit this file, then run scripts/backup_credentials.sh manually
-# to produce a fresh snapshot. The next launchd-triggered run will also pick
-# up the change.
+# Lines starting with `#` and blank lines are ignored. Paths may be files OR
+# directories. Missing paths are warned, not fatal — manifest is a forward
+# declaration.
 #
-# See CREDENTIAL_VAULT.md for the threat model, restore runbook, and
-# rotation policy.
+# To add/remove: edit this file, then run scripts/backup.sh manually to
+# produce a fresh snapshot. The next launchd-triggered run picks up the
+# change automatically; for new WORKSPACE entries also re-run install_agent.sh
+# so the WatchPaths in the launchd plist are regenerated.
+#
+# See README.md for the threat model + restore runbook; ONBOARDING.md for the
+# LLM-runnable new-governor flow.
 
 # ─── Google service-account + OAuth credential JSONs ────────────────────
-~/Applications/market_research/credentials/
-~/Applications/sentiment_importer/config/
-~/Applications/sentiment_importer-donation-mint/config/
-~/Applications/truesight_autopilot/config/
-~/Applications/video_editor/credentials/
+${WORKSPACE}/market_research/credentials/
+${WORKSPACE}/sentiment_importer/config/
+${WORKSPACE}/sentiment_importer-donation-mint/config/
+${WORKSPACE}/truesight_autopilot/config/
+${WORKSPACE}/video_editor/credentials/
 
 # ─── .env files (API keys, RSA private keys, secrets) ───────────────────
-~/Applications/market_research/.env
-~/Applications/truesight_me/.env
-~/Applications/governor_chatbot_service/.env
-~/Applications/video_editor/.env
-~/Applications/dao_client/.env
-~/Applications/truesight_autopilot/.env
-~/Applications/cypher_def/.env
-~/Applications/agroverse_shop/.env
-~/Applications/garyteh_blog/google-apps-script/.env
-~/Applications/openclaw/workshop/.env
-~/Applications/tokenomics/python_scripts/schema_validation/.env
+${WORKSPACE}/market_research/.env
+${WORKSPACE}/truesight_me/.env
+${WORKSPACE}/governor_chatbot_service/.env
+${WORKSPACE}/video_editor/.env
+${WORKSPACE}/dao_client/.env
+${WORKSPACE}/truesight_autopilot/.env
+${WORKSPACE}/cypher_def/.env
+${WORKSPACE}/agroverse_shop/.env
+${WORKSPACE}/garyteh_blog/google-apps-script/.env
+${WORKSPACE}/openclaw/workshop/.env
+${WORKSPACE}/tokenomics/python_scripts/schema_validation/.env
 
 # ─── clasp per-account OAuth tokens (Google Apps Script CLI) ────────────
 ~/.clasprc.json

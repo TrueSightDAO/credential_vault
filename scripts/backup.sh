@@ -1,34 +1,48 @@
 #!/usr/bin/env bash
 #
-# backup_credentials.sh — encrypt the credential manifest into iCloud Drive.
+# backup.sh — encrypt the credential manifest into iCloud Drive.
 #
-# Reads ~/Applications/credential_vault/MANIFEST.txt, tars the
-# listed paths preserving structure relative to $HOME, and pipes through
-# `openssl enc -aes-256-cbc -pbkdf2 -iter 600000` using the passphrase in
-# ~/.credential_vault_passphrase. Output lands in:
+# V1.1 — workspace-root configurability:
+#   ${WORKSPACE} in MANIFEST.txt resolves to $TRUESIGHT_WORKSPACE
+#   (default: $HOME/Applications). Backup stages workspace-relative paths
+#   under `w/` and home-relative paths under `h/` inside the tar, with a
+#   vault_meta.json sidecar that records both roots so restore can
+#   re-root workspace paths into the restoring user's $TRUESIGHT_WORKSPACE.
 #
+# Reads ~/Applications/credential_vault/MANIFEST.txt, tars the listed paths
+# with the h/ + w/ + meta layout, and pipes through `openssl enc
+# -aes-256-cbc -pbkdf2 -iter 600000` using the passphrase in
+# ~/.credential_vault_passphrase.
+#
+# Output:
 #   ~/Library/Mobile Documents/com~apple~CloudDocs/credential_vault/
 #       credentials-YYYYMMDD-HHMMSS.age
-#       credentials-latest.age            (symlink, always points at newest)
+#       credentials-latest.txt           (plain text pointer, not symlink —
+#                                         symlink update needs `unlink` which
+#                                         launchd lacks under iCloud Drive)
 #
-# Retention: keeps the 30 most recent snapshots, prunes older ones.
+# Retention: keeps the 30 most recent snapshots. Prune `rm`s are wrapped so
+# launchd-without-FDA failures log a warning instead of failing the run.
 #
-# Designed to be safe under launchd WatchPaths: includes a 60-second debounce
-# so rapid edits don't produce dozens of near-identical snapshots.
+# Designed safe under launchd WatchPaths: includes a 60-second debounce.
 #
 # Exit codes:
 #   0  — backup succeeded, or skipped due to debounce
-#   1  — manifest missing
+#   1  — manifest missing / zero existing paths
 #   2  — passphrase file missing
-#   3  — encrypt failed (output not written, tmpfile cleaned up)
+#   3  — encrypt pipeline failed
 #
 # See README.md for the threat model + restore runbook.
 
 set -euo pipefail
 
-MANIFEST="${HOME}/Applications/credential_vault/MANIFEST.txt"
+# Auto-detect MANIFEST relative to this script so credential_vault can be
+# cloned anywhere (not just ~/Applications/credential_vault).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST="$SCRIPT_DIR/../MANIFEST.txt"
 PASSPHRASE_FILE="${HOME}/.credential_vault_passphrase"
 VAULT_DIR="${HOME}/Library/Mobile Documents/com~apple~CloudDocs/credential_vault"
+WORKSPACE="${TRUESIGHT_WORKSPACE:-$HOME/Applications}"
 RETENTION=30
 DEBOUNCE_SEC=60
 
@@ -44,15 +58,16 @@ log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
 # Refuse to run if passphrase file is world-readable (defense in depth)
 PERMS=$(stat -f '%Sp' "$PASSPHRASE_FILE")
-if [[ "$PERMS" != *"------"* && "$PERMS" != "-rw-------" ]]; then
+if [[ "$PERMS" != "-rw-------" ]]; then
   log "WARNING: tightening passphrase file perms to 600 (was $PERMS)"
   chmod 600 "$PASSPHRASE_FILE"
 fi
 
+[[ -d "$WORKSPACE" ]] || log "WARN: TRUESIGHT_WORKSPACE=$WORKSPACE does not exist (workspace-relative manifest entries will be skipped)"
+
 mkdir -p "$VAULT_DIR"
 
 # ─── Debounce: skip if a backup ran within DEBOUNCE_SEC ────────────────
-# `|| true` because empty-glob `ls` returns nonzero and would trip pipefail.
 LATEST=$(ls -t "$VAULT_DIR"/credentials-*.age 2>/dev/null | head -1 || true)
 if [[ -n "${LATEST:-}" ]]; then
   NOW=$(date +%s)
@@ -64,29 +79,43 @@ if [[ -n "${LATEST:-}" ]]; then
   fi
 fi
 
-# ─── Resolve manifest paths ────────────────────────────────────────────
-declare -a PATHS=()
+# ─── Resolve manifest paths into HOME_PATHS[] and WS_PATHS[] ────────────
+declare -a HOME_PATHS=()   # paths relative to $HOME
+declare -a WS_PATHS=()     # paths relative to $WORKSPACE
 declare -a MISSING=()
+
 while IFS= read -r line || [[ -n "$line" ]]; do
-  # strip CR (in case manifest was edited on a system with CRLF), trim
+  # strip CR + trim
   line="${line%$'\r'}"
   line="${line#"${line%%[![:space:]]*}"}"
   line="${line%"${line##*[![:space:]]}"}"
   [[ -z "$line" || "$line" =~ ^# ]] && continue
-  expanded="${line/#\~/$HOME}"
-  if [[ -e "$expanded" ]]; then
-    # Path must live under $HOME to be safely re-rooted on restore.
-    if [[ "$expanded" != "$HOME"* ]]; then
-      log "WARNING: manifest path is outside \$HOME — skipping: $line"
-      continue
+
+  if [[ "$line" == '${WORKSPACE}'/* ]]; then
+    # Workspace-relative
+    rel="${line#'${WORKSPACE}'/}"
+    full="$WORKSPACE/$rel"
+    if [[ -e "$full" ]]; then
+      WS_PATHS+=("$rel")
+    else
+      MISSING+=("$line  (resolved: $full)")
     fi
-    PATHS+=("${expanded#$HOME/}")
+  elif [[ "$line" == '~/'* ]]; then
+    # Home-relative
+    rel="${line#'~/'}"
+    full="$HOME/$rel"
+    if [[ -e "$full" ]]; then
+      HOME_PATHS+=("$rel")
+    else
+      MISSING+=("$line  (resolved: $full)")
+    fi
   else
-    MISSING+=("$line")
+    log "WARN: manifest entry not anchored to \${WORKSPACE} or ~/ — skipping: $line"
   fi
 done < "$MANIFEST"
 
-if (( ${#PATHS[@]} == 0 )); then
+TOTAL=$((${#HOME_PATHS[@]} + ${#WS_PATHS[@]}))
+if (( TOTAL == 0 )); then
   log "ERROR: manifest produced zero existing paths — refusing to write empty vault"
   exit 1
 fi
@@ -96,46 +125,66 @@ if (( ${#MISSING[@]} > 0 )); then
   for m in "${MISSING[@]}"; do log "  - $m"; done
 fi
 
+# ─── Stage symlinks under STAGE/h/ and STAGE/w/ + write vault_meta.json ─
+STAGE=$(mktemp -d 2>/dev/null || mktemp -d -t vault)
+stage_cleanup() { rm -rf "$STAGE"; }
+trap stage_cleanup EXIT
+
+mkdir -p "$STAGE/h" "$STAGE/w"
+
+for p in "${HOME_PATHS[@]}"; do
+  # Strip trailing slash — `ln target/` is interpreted as "inside dir" and fails
+  # when the parent doesn't exist. We want to symlink the entry itself.
+  p="${p%/}"
+  mkdir -p "$STAGE/h/$(dirname "$p")"
+  ln -s "$HOME/$p" "$STAGE/h/$p"
+done
+for p in "${WS_PATHS[@]}"; do
+  p="${p%/}"
+  mkdir -p "$STAGE/w/$(dirname "$p")"
+  ln -s "$WORKSPACE/$p" "$STAGE/w/$p"
+done
+
+cat > "$STAGE/vault_meta.json" <<EOF
+{
+  "schema_version": 1,
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "created_by_host": "$(hostname)",
+  "workspace_root_at_backup": "$WORKSPACE",
+  "home_root_at_backup": "$HOME",
+  "home_path_count": ${#HOME_PATHS[@]},
+  "workspace_path_count": ${#WS_PATHS[@]}
+}
+EOF
+
 # ─── Build encrypted snapshot ──────────────────────────────────────────
 # NOTE on launchd + iCloud Drive: macOS Sonoma sandboxes launchd-spawned
-# processes from `rename` and `unlink` operations inside
-# ~/Library/Mobile Documents/com~apple~CloudDocs/ unless the parent binary
-# (`/bin/bash`) has been granted Full Disk Access. CREATE is fine. To stay
-# entitlement-free we write the final file directly (no .tmp + mv pattern)
-# and treat the "latest" pointer as a plain text file (no symlink update).
-# Retention `rm`s are wrapped so a denial logs a warning instead of failing
-# the run; the snapshot itself is still safely written.
+# processes from `rename` and `unlink` ops inside iCloud Drive unless
+# `/bin/bash` has Full Disk Access. CREATE works. We write directly to
+# OUT (no .tmp + mv) and use a plain-text "latest" pointer (no symlink
+# update). Retention `rm`s are wrapped to log a warning instead of failing.
 TS=$(date +%Y%m%d-%H%M%S)
 OUT="$VAULT_DIR/credentials-${TS}.age"
 
-log "Encrypting ${#PATHS[@]} path(s) → $(basename "$OUT")"
+log "Encrypting ${#HOME_PATHS[@]} home + ${#WS_PATHS[@]} workspace path(s) → $(basename "$OUT")"
 
-# tar streams from $HOME so the archive contains $HOME-relative paths;
-# openssl enc consumes the stream with PBKDF2 (600k iter) + AES-256-CBC.
-# Direct write to OUT (no .tmp + mv) so launchd-without-FDA can still publish.
-if ! ( cd "$HOME" && tar -czf - "${PATHS[@]}" ) | \
+# tar -h dereferences symlinks so file CONTENTS land in the archive at the
+# h/ + w/ prefixed paths. openssl pipes the tar stream through PBKDF2+AES.
+if ! ( cd "$STAGE" && tar -czhf - h w vault_meta.json ) | \
        openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt \
                    -pass file:"$PASSPHRASE_FILE" -out "$OUT"; then
   log "ERROR: encrypt pipeline failed"
-  # Best-effort cleanup of any partial OUT — silently OK if iCloud denies.
   rm -f "$OUT" 2>/dev/null || true
   exit 3
 fi
 
-# Update the "latest" pointer. Use a plain text file (not a symlink) because
-# updating a symlink requires `unlink` on the old one, which launchd-without-FDA
-# can't do inside iCloud Drive. restore.sh now reads this text file.
+# Update the "latest" plain-text pointer (CREATE only — no unlink needed).
 echo "$(basename "$OUT")" > "$VAULT_DIR/credentials-latest.txt"
 
 SIZE=$(stat -f %z "$OUT")
 log "Wrote $(basename "$OUT") (${SIZE} bytes)"
 
 # ─── Prune old snapshots beyond RETENTION ──────────────────────────────
-# (portable to bash 3.2 on macOS — no mapfile)
-# `rm` here may fail under launchd-without-FDA; wrap so the script still
-# exits 0 with a warning instead of failing the backup. Snapshots will
-# accumulate until you either grant FDA OR run `backup.sh` from your
-# interactive shell occasionally (which inherits FDA via Terminal.app).
 SNAPSHOTS=()
 while IFS= read -r snap; do
   SNAPSHOTS+=("$snap")

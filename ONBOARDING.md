@@ -58,18 +58,39 @@ npm install -g @google/clasp
 
 ---
 
-## Step 1 — Clone the workspace skeleton
+## Step 1 — Pick a workspace root + clone the skeleton
+
+Ask her: *"Where do you want your TrueSight DAO repos to live? The
+default is `~/Applications/`. If you already have a strong preference
+(`~/code/`, `~/projects/`, `~/Dev/truesight/`), use that — the vault is
+designed to handle non-default workspace roots."*
+
+If she sticks with the default, no env var needed. If she picks another
+path:
 
 ```bash
-mkdir -p ~/Applications && cd ~/Applications
-gh auth login                                     # GitHub HTTPS, browser flow
-gh repo clone TrueSightDAO/credential_vault        # ← this repo (clone first)
-gh repo clone TrueSightDAO/agentic_ai_context      # context + onboarding docs
-gh repo clone TrueSightDAO/dao_client               # signed-event CLI
+echo 'export TRUESIGHT_WORKSPACE=~/code' >> ~/.zshrc    # or ~/.bash_profile
+source ~/.zshrc
 ```
 
-✋ **Confirm:** `ls ~/Applications/credential_vault` shows `README.md`,
-`MANIFEST.txt`, `scripts/`.
+Then clone the skeleton into her chosen workspace:
+
+```bash
+mkdir -p "${TRUESIGHT_WORKSPACE:-$HOME/Applications}"
+cd       "${TRUESIGHT_WORKSPACE:-$HOME/Applications}"
+gh auth login                                     # GitHub HTTPS, browser flow
+gh repo clone TrueSightDAO/credential_vault        # ← this repo
+gh repo clone TrueSightDAO/agentic_ai_context      # context + onboarding docs
+gh repo clone TrueSightDAO/dao_client              # signed-event CLI
+```
+
+`credential_vault` auto-detects its own location, so it can live wherever
+she clones it (not just `~/Applications/credential_vault/`).
+
+✋ **Confirm:** `ls "${TRUESIGHT_WORKSPACE:-$HOME/Applications}/credential_vault"`
+shows `README.md`, `MANIFEST.txt`, `scripts/`. And
+`echo "$TRUESIGHT_WORKSPACE"` (after sourcing her rc) prints her chosen
+path.
 
 ---
 
@@ -212,7 +233,7 @@ populated later as her scope expands.
 ## Step 9 — Customize her `MANIFEST.txt`
 
 ```bash
-cd ~/Applications/credential_vault
+cd "${TRUESIGHT_WORKSPACE:-$HOME/Applications}/credential_vault"
 cp MANIFEST.txt MANIFEST.txt.canonical          # keep the upstream version
 $EDITOR MANIFEST.txt
 ```
@@ -220,8 +241,12 @@ $EDITOR MANIFEST.txt
 Comment out paths for services she didn't set up. Add any laptop-local
 paths specific to her role.
 
-✋ **Confirm:** `grep -v '^#' MANIFEST.txt | grep -v '^$' | wc -l`
-matches the number of credentials she actually has on disk.
+Note the manifest's two path conventions: `${WORKSPACE}/...` for repo-relative
+paths (auto-resolved against her `$TRUESIGHT_WORKSPACE`), and `~/...` for
+home-relative paths. Most new entries she adds will be `${WORKSPACE}/...`.
+
+✋ **Confirm:** `grep -vE '^(#|$)' MANIFEST.txt | wc -l` matches the
+number of credentials she actually has on disk.
 
 ---
 
@@ -255,7 +280,7 @@ chmod 600 ~/.credential_vault_passphrase
 ### 10c — First backup
 
 ```bash
-~/Applications/credential_vault/scripts/backup.sh
+"${TRUESIGHT_WORKSPACE:-$HOME/Applications}/credential_vault/scripts/backup.sh"
 ```
 
 Expected output:
@@ -271,30 +296,37 @@ shows the snapshot + a `credentials-latest.age` symlink.
 
 ### 10d — Verify roundtrip into a scratch HOME
 
-Before trusting her backup, prove a restore works:
+Before trusting her backup, prove a restore works (use a fake workspace
+too — this exercises the V1.1 re-rooting):
 
 ```bash
-mkdir -p /tmp/vault_smoke
+mkdir -p /tmp/vault_smoke/code
 cp ~/.credential_vault_passphrase /tmp/vault_smoke/
 mkdir -p /tmp/vault_smoke/Library/Mobile\ Documents/com~apple~CloudDocs
 ln -sfn "$HOME/Library/Mobile Documents/com~apple~CloudDocs/credential_vault" \
         "/tmp/vault_smoke/Library/Mobile Documents/com~apple~CloudDocs/credential_vault"
-HOME=/tmp/vault_smoke ~/Applications/credential_vault/scripts/restore.sh --dry-run
+
+HOME=/tmp/vault_smoke TRUESIGHT_WORKSPACE=/tmp/vault_smoke/code \
+  "${TRUESIGHT_WORKSPACE:-$HOME/Applications}/credential_vault/scripts/restore.sh" --dry-run
+
 rm -rf /tmp/vault_smoke
 ```
 
-She should see her files listed. If she does, the roundtrip works.
+Dry-run output should label each entry `[HOME]` or `[WORKSPACE]` and show
+workspace targets at `/tmp/vault_smoke/code/...` — confirming the
+re-rooting works on her machine, not just in theory.
 
 ### 10e — Install the launchd agent (so future edits auto-snapshot)
 
 ```bash
-sed "s|__HOME__|$HOME|g" \
-  ~/Applications/credential_vault/launchd/me.truesight.credential-backup.plist.template \
-  > ~/Library/LaunchAgents/me.truesight.credential-backup.plist
-
-launchctl load -w ~/Library/LaunchAgents/me.truesight.credential-backup.plist
+"${TRUESIGHT_WORKSPACE:-$HOME/Applications}/credential_vault/scripts/install_agent.sh"
 launchctl list | grep me.truesight.credential-backup
 ```
+
+The script generates the launchd plist from `MANIFEST.txt` and her
+`$TRUESIGHT_WORKSPACE`, so the `<WatchPaths>` resolve to her actual repo
+locations (not Gary's `~/Applications/`). Re-run it any time she edits
+`MANIFEST.txt` or changes her workspace root.
 
 ✋ **Confirm:** the agent shows up in `launchctl list` output. Then edit
 any credential file (e.g. add a comment to her `.env` and save it). Within
