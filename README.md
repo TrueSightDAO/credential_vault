@@ -26,12 +26,17 @@ belt-and-suspenders against accidental commits.
 
 | Scope | Status |
 |---|---|
-| `~/Applications/*/.env` files (API keys, RSA private keys) | ✅ |
-| `~/Applications/*/{config,credentials}/*.json` Google service-account + OAuth tokens | ✅ |
+| `${WORKSPACE}/*/.env` files (API keys, RSA private keys) | ✅ |
+| `${WORKSPACE}/*/{config,credentials}/*.json` Google service-account + OAuth tokens | ✅ |
 | `~/.clasprc-*.json` per-account clasp tokens (Google Apps Script CLI) | ✅ |
 | `~/.config/gh/` GitHub CLI auth | ✅ |
 | `~/.ssh/id_rsa` + `config` + `known_hosts` | ✅ |
 | `~/.aws/{credentials,config}` AWS CLI auth | ✅ |
+
+`${WORKSPACE}` resolves to `$TRUESIGHT_WORKSPACE` (default: `$HOME/Applications`).
+A governor who clones her repos to `~/code/` instead sets
+`export TRUESIGHT_WORKSPACE=~/code` in her shell rc and everything else
+Just Works — see § "Workspace root" below.
 | Source code | ❌ — re-clone from GitHub |
 | Memory dir (`~/.claude/projects/*/memory/`) | ❌ — flagged as a known V1 gap, see Open Follow-ups |
 | Per-credential rotation / per-service scoping | ❌ — Tier-2 problem; not addressed |
@@ -62,9 +67,21 @@ belt-and-suspenders against accidental commits.
                 ~/Library/Mobile Documents/com~apple~CloudDocs/
                           credential_vault/
                               credentials-20260529-154124.age
-                              credentials-latest.age → newest
+                              credentials-latest.txt    ← points at newest
                           (retention: 30 snapshots)
 ```
+
+Inside each `.age`, the tar archive splits into:
+
+```
+  vault_meta.json    ← workspace_root + home_root at backup time
+  h/                 ← home-relative paths (~/.clasprc-admin.json, etc.)
+  w/                 ← workspace-relative paths (dao_client/.env, etc.)
+```
+
+On restore, `h/*` goes to `$HOME` and `w/*` goes to
+`$TRUESIGHT_WORKSPACE` (default `$HOME/Applications`) — so a snapshot
+moves cleanly between laptops with different repo layouts.
 
 **Why openssl, not age?** `age` has no `--passphrase-from-file` flag — it
 always prompts. That breaks unattended launchd. LibreSSL 3.3.6 ships with
@@ -140,15 +157,15 @@ The snapshot lands in
 
 ### 6. Install the launchd agent
 
-Render the plist template with your `$HOME` and load it:
+A single script renders the plist (with your `$HOME` + `$TRUESIGHT_WORKSPACE`)
+and loads it:
 
 ```bash
-sed "s|__HOME__|$HOME|g" \
-  ~/Applications/credential_vault/launchd/me.truesight.credential-backup.plist.template \
-  > ~/Library/LaunchAgents/me.truesight.credential-backup.plist
-
-launchctl load -w ~/Library/LaunchAgents/me.truesight.credential-backup.plist
+~/Applications/credential_vault/scripts/install_agent.sh
 ```
+
+(If your workspace is non-default, set it first:
+`export TRUESIGHT_WORKSPACE=~/code && ~/Applications/credential_vault/scripts/install_agent.sh`)
 
 Confirm it loaded:
 
@@ -159,21 +176,29 @@ launchctl list | grep me.truesight.credential-backup
 Touch a credential file (e.g. re-save a `.env`) — a new snapshot should
 appear in iCloud Drive within ~60 seconds.
 
+To regenerate the plist after editing `MANIFEST.txt` or changing
+`TRUESIGHT_WORKSPACE`: re-run `install_agent.sh`. To uninstall:
+`install_agent.sh --uninstall`. To preview the generated plist without
+installing: `install_agent.sh --print-only`.
+
 ### 7. (Recommended) Verify roundtrip into a scratch HOME
 
 Before trusting the backup, prove that a restore works:
 
 ```bash
-mkdir -p /tmp/vault_smoke
+mkdir -p /tmp/vault_smoke/code         # fake workspace
 cp ~/.credential_vault_passphrase /tmp/vault_smoke/
 mkdir -p /tmp/vault_smoke/Library/Mobile\ Documents/com~apple~CloudDocs
 ln -sfn "$HOME/Library/Mobile Documents/com~apple~CloudDocs/credential_vault" \
         "/tmp/vault_smoke/Library/Mobile Documents/com~apple~CloudDocs/credential_vault"
-HOME=/tmp/vault_smoke ~/Applications/credential_vault/scripts/restore.sh --dry-run
+
+HOME=/tmp/vault_smoke TRUESIGHT_WORKSPACE=/tmp/vault_smoke/code \
+  ~/Applications/credential_vault/scripts/restore.sh --dry-run
 ```
 
-You should see a listing of every file you backed up. Delete `/tmp/vault_smoke`
-when done.
+The dry-run output should label each entry `[HOME]` or `[WORKSPACE]` and
+show targets like `/tmp/vault_smoke/code/dao_client/.env` for workspace
+paths — confirming the re-rooting works. Delete `/tmp/vault_smoke` when done.
 
 ---
 
@@ -203,7 +228,8 @@ when done.
    locations.
 7. Re-clone the rest of your workspace repos as needed; their `.env` and
    `config/*.json` SA keys are already in place from step 6.
-8. Reinstall the launchd agent (same as setup step 6).
+8. Reinstall the launchd agent: `~/Applications/credential_vault/scripts/install_agent.sh`
+   (set `TRUESIGHT_WORKSPACE` first if your workspace isn't `~/Applications/`).
 
 **Expected end-to-end time on a fresh Mac:** 15 minutes excluding repo
 re-cloning.
@@ -278,6 +304,50 @@ works. The choice matters less than passphrase strength. LastPass had a
 2022 vault-exfil incident — encrypted vaults left the building; users with
 weak passphrases were compromised, users with strong ones weren't. Pick a
 strong passphrase regardless of which password manager you trust.
+
+---
+
+## Workspace root — `$TRUESIGHT_WORKSPACE`
+
+`MANIFEST.txt` uses two path conventions:
+
+| Convention | Resolves to | Example |
+|---|---|---|
+| `${WORKSPACE}/...` | `$TRUESIGHT_WORKSPACE` (default: `$HOME/Applications`) | `${WORKSPACE}/dao_client/.env` |
+| `~/...` | `$HOME` (always) | `~/.clasprc-admin.json` |
+
+This means a governor whose repos live at `~/code/dao_client/` instead of
+`~/Applications/dao_client/` doesn't need to fork the manifest — she just
+sets the env var:
+
+```bash
+echo 'export TRUESIGHT_WORKSPACE=~/code' >> ~/.zshrc
+# or ~/.bash_profile if she uses bash
+source ~/.zshrc
+~/Applications/credential_vault/scripts/install_agent.sh    # regenerate launchd plist
+```
+
+The encrypted archive records the source workspace root in a
+`vault_meta.json` sidecar. On restore, the script reads the sidecar and
+**re-roots** workspace-relative paths into the restoring user's
+`$TRUESIGHT_WORKSPACE` — so a snapshot Gary creates at
+`~/Applications/dao_client/.env` restores to Maya's `~/code/dao_client/.env`
+without anyone editing anything.
+
+Home-relative paths (`~/...`) are unaffected by this — they always go to
+`$HOME` on both backup and restore.
+
+**`credential_vault`'s own location is also auto-detected** by the
+scripts (relative to `BASH_SOURCE`), so the vault repo itself can be
+cloned anywhere — not just `~/Applications/credential_vault/`. Most
+documentation uses the default location for clarity, but it's not
+required.
+
+### Backward compatibility
+
+V1 snapshots (no `vault_meta.json`) are detected automatically and
+extracted directly to `$HOME` with the old V1 semantics. No V1.1 user
+action is needed to keep restoring them.
 
 ---
 
