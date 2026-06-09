@@ -42,6 +42,7 @@ ${WORKSPACE}/agroverse_shop/.env
 ${WORKSPACE}/garyteh_blog/google-apps-script/.env
 ${WORKSPACE}/openclaw/workshop/.env
 ${WORKSPACE}/tokenomics/python_scripts/schema_validation/.env
+${WORKSPACE}/treasury-cache/.env
 
 # ─── clasp per-account OAuth tokens (Google Apps Script CLI) ────────────
 ~/.clasprc.json
